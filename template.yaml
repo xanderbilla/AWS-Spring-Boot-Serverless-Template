@@ -1,0 +1,120 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Spring Boot Demo Application on AWS Lambda
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+    Description: Stage name for the deployment
+
+Resources:
+  # CloudWatch Log Group for Lambda Function
+  DemoFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-${Stage}"
+      RetentionInDays: 14
+
+  # CloudWatch Log Group for API Gateway
+  ApiGatewayLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/apigateway/${AWS::StackName}-api-${Stage}"
+      RetentionInDays: 14
+
+  # IAM Role for API Gateway CloudWatch Logging
+  ApiGatewayCloudWatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+
+  # API Gateway Account for CloudWatch Logging
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchRole.Arn
+
+  DemoFunction:
+    Type: AWS::Serverless::Function
+    DependsOn: DemoFunctionLogGroup
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-${Stage}"
+      CodeUri: target/demo-lambda.jar
+      Handler: com.example.demo.handler.StreamLambdaHandler::handleRequest
+      Runtime: java21
+      Timeout: 30
+      MemorySize: 1024
+      Environment:
+        Variables:
+          SPRING_PROFILES_ACTIVE: !Ref Stage
+      Events:
+        ProxyResource:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DemoApi
+            Path: /{proxy+}
+            Method: ANY
+        RootResource:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DemoApi
+            Path: /
+            Method: ANY
+
+  DemoApi:
+    Type: AWS::Serverless::Api
+    DependsOn: 
+      - ApiGatewayLogGroup
+      - ApiGatewayAccount
+    Properties:
+      Name: !Sub "${AWS::StackName}-api-${Stage}"
+      StageName: !Ref Stage
+      Cors:
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowOrigin: "'*'"
+      BinaryMediaTypes:
+        - "*/*"
+      AccessLogSetting:
+        DestinationArn: !GetAtt ApiGatewayLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","path":"$context.path","resourcePath":"$context.resourcePath","status":$context.status,"responseLength":$context.responseLength,"responseTime":$context.responseTime,"xrayTraceId":"$context.xrayTraceId","integrationRequestId":"$context.integration.requestId","functionResponseStatus":"$context.integration.status","integrationLatency":"$context.integration.latency","integrationServiceStatus":"$context.integration.integrationStatus","ip":"$context.identity.sourceIp","userAgent":"$context.identity.userAgent","principalId":"$context.authorizer.principalId"}'
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          LoggingLevel: INFO
+          DataTraceEnabled: true
+          MetricsEnabled: true
+
+Outputs:
+  DemoApi:
+    Description: "API Gateway endpoint URL for Demo function"
+    Value: !Sub "https://${DemoApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/"
+    Export:
+      Name: !Sub "DemoApi-${Stage}"
+  
+  DemoFunction:
+    Description: "Demo Lambda Function ARN"
+    Value: !GetAtt DemoFunction.Arn
+    Export:
+      Name: !Sub "DemoFunction-${Stage}"
+
+  LambdaLogGroup:
+    Description: "Lambda Function CloudWatch Log Group"
+    Value: !Ref DemoFunctionLogGroup
+    Export:
+      Name: !Sub "DemoFunctionLogGroup-${Stage}"
+
+  ApiGatewayLogGroup:
+    Description: "API Gateway CloudWatch Log Group"
+    Value: !Ref ApiGatewayLogGroup
+    Export:
+      Name: !Sub "ApiGatewayLogGroup-${Stage}"
